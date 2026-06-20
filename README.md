@@ -1,4 +1,5 @@
-# The Self-Verifying Loop
+# <img width="1199" height="480" alt="image" src="https://github.com/user-attachments/assets/30d61358-ae25-4177-a5b5-8a0b72c628e4" />
+
 
 ### 300 agents. 4,000 steps. 5 live data feeds. Zero hallucinated numbers shipped.
 
