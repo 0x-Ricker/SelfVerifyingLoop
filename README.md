@@ -1,322 +1,584 @@
-# kdeps
+# The Self-Verifying Loop
 
-[![NVIDIA Inception](https://img.shields.io/badge/NVIDIA-Inception-76B900?logo=nvidia&logoColor=white)](https://www.nvidia.com/en-us/startups/)
-[![Build and Test](https://github.com/kdeps/kdeps/actions/workflows/build-test.yml/badge.svg?branch=main)](https://github.com/kdeps/kdeps/actions/workflows/build-test.yml)
-[![Coverage](https://codecov.io/gh/kdeps/kdeps/branch/main/graph/badge.svg)](https://codecov.io/gh/kdeps/kdeps)
-[![Release](https://img.shields.io/github/v/tag/kdeps/kdeps?sort=semver&label=release)](https://github.com/kdeps/kdeps/releases)
-[![Go](https://img.shields.io/github/go-mod/go-version/kdeps/kdeps)](https://go.dev/)
-[![License](https://img.shields.io/github/license/kdeps/kdeps)](https://github.com/kdeps/kdeps/blob/main/LICENSE)
-[![CodeQL](https://github.com/kdeps/kdeps/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/kdeps/kdeps/actions/workflows/codeql.yml)
-[![Docs](https://github.com/kdeps/kdeps/actions/workflows/docs.yml/badge.svg?branch=main)](https://kdeps.com)
-[![Documentation](https://img.shields.io/badge/docs-kdeps.com-00E5FF)](https://kdeps.com)
-[![Registry](https://img.shields.io/badge/registry-kdeps.io-00E5FF)](https://kdeps.io)
-[![GitHub stars](https://img.shields.io/github/stars/kdeps/kdeps)](https://github.com/kdeps/kdeps/stargazers)
+### 300 agents. 4,000 steps. 5 live data feeds. Zero hallucinated numbers shipped.
 
-Build and deploy AI agents in YAML. Two modes: **workflow** (DAG pipelines), **agent loop** (interactive LLM loop). Proud member of the [NVIDIA Inception](https://www.nvidia.com/en-us/startups/) program for AI startups.
-
-## Book
-
-[<img src="https://d2sofvawe08yqg.cloudfront.net/kdeps/s_hero?1779817160" alt="AI Appliances book cover" width="140" align="right" style="margin-left:16px">](https://leanpub.com/kdeps)
-
-**[AI Appliances - Build & Deploy Autonomous AI Agents and Agencies in YAML](https://leanpub.com/kdeps)**
-Free. PDF, EPUB, and web.
-
-Hands-on guide covering deterministic pipelines, multi-agent orchestration, error handling, and vendor-agnostic deployment - the production challenges most AI frameworks leave to you.
-
-<br clear="right">
-
-## Install
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/kdeps/kdeps/main/install.sh | sh
-```
-
-Or with Homebrew (macOS and Linux):
-
-```bash
-brew install kdeps/tap/kdeps
-```
-
-## Modes
-
-### Workflow mode
-
-DAG-deterministic request/response pipelines. Each resource declares its dependencies via `requires:` and runs in order. Supports API server, web server, file input, and bot input.
-
-```
-POST /summarize  {"url": "..."}
-        |
-        v
-+---------------------+
-|  fetch              |  httpClient -- fetches the URL
-+---------------------+
-        |
-        v
-+---------------------+
-|  respond            |  chat -- summarizes the fetched body
-+---------------------+
-        |
-        v
-   apiResponse        <- output('respond') becomes the HTTP response body
-```
-
-```yaml
-# workflow.yaml
-apiVersion: kdeps.io/v1
-kind: Workflow
-metadata:
-  name: summarizer
-  version: "1.0.0"
-  targetActionId: respond
-settings:
-  apiServer:
-    portNum: 16395
-    routes:
-      - path: /summarize
-        methods: [POST]
-  agentSettings:
-    timezone: Etc/UTC
-```
-
-```yaml
-# resources/fetch.yaml
-actionId: fetch
-name: Fetch Page
-httpClient:
-  method: GET
-  url: "{{ get('url') }}"
-  timeout: 10s
-```
-
-```yaml
-# resources/respond.yaml
-actionId: respond
-name: Summarize and Respond
-requires: [fetch]
-chat:
-  model: llama3.2:1b  # local llamafile, auto-downloaded on first run - no LLM server needed
-  prompt: "Summarize this page: {{ output('fetch').body }}"
-apiResponse:
-  response: "{{ output('respond').message.content }}"  # the model's reply text
-```
-
-```bash
-kdeps run workflow.yaml          # local, instant startup
-kdeps run workflow.yaml --dev    # hot reload
-```
-
-**Resource types:** `chat`, `httpClient`, `python`, `exec`, `sql`, `email`, `scraper`, `browser`, `embedding`, `searchLocal`, `searchWeb`, `agent`, `component`, `file`, `git`, `codeIntelligence`, `loader`, `vectorStore`, `transcribe`
-
-**LLM providers:** OpenAI, Anthropic, Google (Gemini), DeepSeek, Groq, xAI, Mistral, Cohere, Together, Perplexity, OpenRouter, Bedrock (AWS), WatsonX (IBM), Cloudflare, HuggingFace, Maritaca, Ernie — plus Ollama, llamafile, and GGUF for local inference
-
-**Embedding backends:** OpenAI, Google, HuggingFace, Jina, VoyageAI, Bedrock, Cybertron (local), Ollama
-
-**Vector store providers:** Qdrant, Chroma, Pinecone, Weaviate, OpenSearch, pgvector, MongoDB, Redis, Azure AI Search, MariaDB, Dolt, Bedrock Knowledge Bases
-
-**Download acceleration:** aria2c with resume support, configurable via `llm.aria2c_flags` in config.yaml — falls back to built-in HTTP downloader if aria2c is not installed
-
-**Expressions:** `get('key')` reads request input, `output('actionId')` reads a prior step's result, `set('key', val)` stores state. All expressions are safe inside `{{ }}` — Jinja2 control flow (`{% if %}`, `{% for %}`) is also supported.
-
-### Agent mode
-
-Autonomous LLM loop. Each workflow is registered as a callable tool, named after its `metadata.name` -- the LLM decides which tools to call, in what order, to complete the task. Calling a tool runs that workflow's full pipeline, so every `requires:` dependency resolves correctly. Agencies and installed components become tools too; individual resources are never exposed directly.
-
-```
-stdin prompt
-      |
-      v
-+---------------------+
-|  LLM                |  plans steps, picks tools
-+---------------------+
-      |
-      +-- call tool: summarizer    -->  runs that workflow's full DAG
-      |
-      +-- call tool: research-bot  -->  runs another workflow
-      |
-      +-- call tool: scraper       -->  runs an installed component
-      |
-      v
-+---------------------+
-|  LLM (again)        |  synthesizes results into final answer
-+---------------------+
-      |
-      v
-   stdout response
-```
-
-```bash
-kdeps                              # model-only REPL, no workflows
-kdeps ./my-agent/                  # one workflow = one tool
-kdeps ./agents/                    # folder = every workflow inside becomes a tool
-kdeps ./my-agent/ --model llama3.2 --system "You are a DevOps assistant."
-kdeps --skill ~/.kdeps/skills/     # load skill files into the agent
-kdeps --resume <session-id>        # continue a previous conversation
-```
-
-The agent reads from stdin (REPL with slash commands: `/help`, `/clear`, `/model`, `/skills`, `/history`, `/exit`) and runs until you exit. Sessions are persisted as JSONL under `~/.kdeps/sessions/` and can be resumed with `--resume`. Workflows, agencies, and installed components are available as tools without any extra wiring.
-
-`/model` with no arguments opens an interactive TUI model picker with search, type-to-filter, and visual tags for local vs cloud models. `/model <name>` switches models and auto-starts local servers for llamafile, GGUF, and Ollama models. Model downloads use aria2c for fast parallel downloads with resume support. Local model servers are automatically cleaned up on exit.
-
-```bash
-kdeps llamafile list               # list all LF + GGUF + Ollama models
-kdeps llamafile update             # refresh from HuggingFace
-```
-
-```
-KDEPS_AGENT_MODEL=claude-3-5-sonnet   # override model via env
-KDEPS_AGENT_BACKEND=anthropic
-```
-
-## Agencies
-
-An agency is a collection of agents that work together. Each agent is its own `workflow.yaml` with its own resources, model, and logic. You wire them together using the `agent:` resource type, which runs another agent's full workflow and returns its output — like calling a function, but the function is an entire AI pipeline.
-
-```
-POST /run-marketing-pipeline
-        │
-        ▼
-┌─────────────────────┐
-│   content-writer    │  ← its own workflow.yaml, writes the blog post
-└────────┬────────────┘
-         │ output passed as params
-         ▼
-┌─────────────────────┐
-│   cms-publisher     │  ← its own workflow.yaml, publishes to CMS
-└─────────────────────┘
-         │
-         ▼
-      response
-```
-
-The orchestrating workflow calls each agent in order using `agent:`:
-
-```yaml
-# resources/draft.yaml
-actionId: draft
-name: Draft Post
-agent:
-  name: content-writer        # runs agents/content-writer/workflow.yaml
-  params:
-    topic: "{{ get('topic') }}"  # passed as get('topic') inside that agent
-```
-
-```yaml
-# resources/publish.yaml
-actionId: publish
-name: Publish Post
-requires: [draft]
-agent:
-  name: cms-publisher         # runs agents/cms-publisher/workflow.yaml
-  params:
-    content: "{{ output('draft') }}"  # previous agent's output forwarded
-apiResponse:
-  response: "{{ output('publish') }}"
-```
-
-Run an agency:
-
-```bash
-kdeps run agency.yaml
-```
-
-## Build and deploy
-
-```bash
-kdeps bundle build          # Docker image
-kdeps bundle export iso     # bootable edge ISO
-kdeps bundle prepackage     # self-contained binary per arch
-kdeps export k8s            # Kubernetes manifests
-```
-
-## Registry
-
-```bash
-kdeps registry search <query>
-kdeps registry install <package>
-kdeps registry submit --tag v1.0.0   # generate formula for kdeps.io PR
-```
-
-## Agent skill
-
-A [coding-agent skill](https://github.com/kdeps/skill) teaches Claude Code, Cursor,
-Grok, and other agents how to scaffold kdeps workflows, components, and agencies —
-including `kdeps.pkg.yaml` for [kdeps.io](https://kdeps.io) distribution.
-
-```bash
-git clone https://github.com/kdeps/skill ~/.claude/skills/kdeps
-```
-
-Docs: [kdeps.com/getting-started/agent-skills](https://kdeps.com/getting-started/agent-skills)
-
-## Global config
-
-```bash
-kdeps edit    # opens ~/.kdeps/config.yaml
-kdeps doctor  # check config, LLM backend, Python, installed agents
-```
-
-```yaml
-# ~/.kdeps/config.yaml
-llm:
-  backend: file             # default: local llamafile, no server install. Also: gguf, ollama, openai, anthropic, groq, xai, openrouter, ...
-  openai_api_key: sk-...    # only needed for the relevant backend
-
-defaults:
-  timezone: UTC
-  python_version: "3.12"
-
-resource_defaults:          # applied to every resource of that type
-  chat:
-    timeout: 60s            # hard stop per LLM call
-    context_length: 4096
-  http:
-    timeout: 30s
-```
-
-Per-agent config overrides: add an `agents:` block keyed by the workflow name to override globals for that agent only:
-
-```yaml
-agents:
-  my-agent:          # matches metadata.name in workflow.yaml
-    llm:
-      backend: openai
-      openai_api_key: sk-...
-```
-
-Config is validated on load. Warnings go to stderr for unknown keys, missing API keys, invalid durations, and agent profiles that don't match any installed workflow.
-
-## Security
-
-When `apiServer` is configured, authentication is required. Set the token via `KDEPS_API_AUTH_TOKEN` or `api_auth_token` in `~/.kdeps/config.yaml` (never in `workflow.yaml`). Clients send `Authorization: Bearer <token>` or `X-Api-Key: <token>`. `/health` is exempt. `/_kdeps/*` management routes use `KDEPS_MANAGEMENT_TOKEN`.
-
-```bash
-export KDEPS_API_AUTH_TOKEN=your-secret-token
-kdeps run workflow.yaml
-```
-
-```yaml
-settings:
-  apiServer:
-    rateLimit:
-      requestsPerMinute: 60          # sustained per-IP rate; excess gets 429
-      burst: 10                      # burst allowance above the sustained rate
-    maxBodyBytes: 1048576            # 1 MB request body cap; 413 if exceeded
-    trustedProxies:                  # honor X-Forwarded-For only from these peers
-      - "10.0.0.0/8"
-    cors:
-      allowOrigins:
-        - https://myapp.com
-  webServer:                         # optional; same rateLimit/maxBodyBytes/maxConcurrent fields
-    rateLimit:
-      requestsPerMinute: 120
-  certFile: /path/to/cert.pem        # TLS -- omit for plain HTTP
-  keyFile: /path/to/key.pem
-```
-
-## Logging
-
-Structured JSON via `log/slog`. Set `KDEPS_LOG_FORMAT=json` for production output. Default level: WARN. Flags: `--verbose` (INFO), `--debug` (DEBUG).
+> Most agent swarms don’t produce intelligence.
+> They produce **confident garbage at scale**.
+>
+> This one doesn’t stop until every number survives verification against a live source.
 
 ---
 
-[Documentation](https://kdeps.com) | [Registry](https://kdeps.io) | Apache 2.0
+<p align="center">
+  <b>Planner / Verifier:</b> Opus 4.8 &nbsp;&nbsp;•&nbsp;&nbsp;
+  <b>Execution Swarm:</b> Kimi K2.6 &nbsp;&nbsp;•&nbsp;&nbsp;
+  <b>Scale:</b> 300 parallel agents / 4,000 steps / 100-company research jobs
+</p>
+
+---
+
+## What this repo is
+
+This repo is a pattern for building **research-grade agent swarms** that don’t just generate output — they **check their own work, reject failures, and rerun until the report is clean**.
+
+Most multi-agent systems have one fatal flaw:
+
+* they optimize for **throughput**
+* they optimize for **parallelism**
+* they optimize for **wow-factor demos**
+
+…but they don’t optimize for **truth**
+
+That’s why swarms are fast and still unusable for serious research.
+They can produce 100 company writeups in minutes — and quietly hallucinate 12 of them.
+
+This repo fixes that by treating the swarm as **one stage in a loop**, not the final answer.
+
+---
+
+# The idea in one sentence
+
+> **A swarm gives you speed. A verifier gives you trust. A loop gives you both.**
+
+---
+
+# Why this exists
+
+The dirty secret of agent swarms is that **more agents usually means more confident nonsense**.
+
+If you point 300 agents at a research job, they will absolutely come back fast.
+
+They will also come back with:
+
+* stale numbers
+* fake or broken citations
+* missing fields
+* inconsistent financial figures
+* companies that don’t exist
+* outputs that *look* polished enough to fool you
+
+And that’s the real problem: **bad swarm output often looks identical to good swarm output** until someone catches it manually.
+
+So instead of asking:
+
+> “How do I make the swarm bigger?”
+
+this repo asks:
+
+> **“How do I make the swarm unable to ship bad work?”**
+
+---
+
+# The architecture
+
+## The Self-Verifying Loop
+
+```text id="lu3j0s"
+┌────────────────────┐
+│ 1. PLAN            │
+│ Opus 4.8 breaks    │
+│ the job into tasks │
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│ 2. EXECUTE         │
+│ Kimi K2.6 swarm    │
+│ runs tasks in      │
+│ parallel           │
+└─────────┬──────────┘
+          │
+          ▼
+┌────────────────────┐
+│ 3. VERIFY          │
+│ Opus checks every  │
+│ output against the │
+│ live source cited  │
+└─────────┬──────────┘
+          │
+     fail │ pass
+          │
+          ▼
+┌────────────────────┐
+│ 4. REQUEUE         │
+│ Failed tasks go    │
+│ back into swarm    │
+│ with rejection     │
+│ reason attached    │
+└─────────┬──────────┘
+          │
+          └──── repeat until verify = clean
+```
+
+The loop only stops when **nothing fails verification**.
+
+That’s the whole system.
+
+Not “generate once and hope.”
+Not “manually spot-check 100 rows.”
+Not “the model sounded confident.”
+
+**Verify. Reject. Requeue. Repeat.**
+
+---
+
+# Why raw swarms break
+
+A raw swarm has exactly one quality level:
+
+> **whatever the worst agent produced**
+
+If 97 agents get their company right and 3 hallucinate revenue numbers, the final report still contains 3 landmines.
+
+And worse:
+
+* the report still looks complete
+* the table still looks polished
+* the output still sounds authoritative
+* nobody knows which 3 rows are wrong until it matters
+
+That’s why “just add more agents” doesn’t solve the problem.
+
+It scales:
+
+* output volume
+* speed
+* task coverage
+
+…and also scales:
+
+* hallucinations
+* stale data
+* citation failures
+* hidden errors
+
+Without verification, a swarm is just a **mistake multiplier with better UX**.
+
+---
+
+# What makes this different
+
+This system turns verification into a **first-class stage with real teeth**.
+
+Every agent output is checked against the source it claims to use.
+
+If a result fails, it does **not** get “flagged for later.”
+It gets **rejected immediately** and sent back to rerun.
+
+## Verification rules
+
+Every company/task must pass a checklist like:
+
+* revenue pulled from a live source
+* margin pulled from a live source
+* source URL attached
+* source URL resolves
+* cited figure matches source within tolerance
+* no required field left empty
+* output schema is complete
+
+If any of those fail, the task goes back into the queue.
+
+No exceptions. No “close enough.” No human babysitting.
+
+---
+
+# The test run
+
+To stress-test the loop, I gave it a job that punishes hallucination harder than almost anything:
+
+> **Analyze 100 companies in the EV market and generate a research-grade report + comparison matrix with every figure traced to a live source.**
+
+## Stack used
+
+* **Planner / verifier:** Opus 4.8
+* **Execution swarm:** Kimi K2.6
+* **Live data feeds:** 5
+* **Parallel agents:** 300
+* **Total workflow steps:** ~4,000
+
+---
+
+# What happened
+
+## Pass 1
+
+* **100 companies checked**
+* **88 passed**
+* **12 rejected**
+
+Failures included:
+
+* revenue figures that didn’t match the cited source
+* citations that didn’t resolve
+* missing margin fields
+
+## Pass 2
+
+* **3 still failed**
+
+## Pass 3
+
+* **0 failed**
+
+Loop stops automatically.
+
+A normal swarm would have shipped all 12 errors and called it a success.
+
+This loop caught them without me reading a single row.
+
+---
+
+# Example verifier output
+
+```json id="q4fb54"
+{
+  "pass": 1,
+  "checked": 100,
+  "passed": 88,
+  "rejected": [
+    { "company": "co_041", "reason": "revenue != source" },
+    { "company": "co_067", "reason": "citation 404" },
+    { "company": "co_092", "reason": "margin empty" }
+  ],
+  "action": "requeue rejected -> swarm"
+}
+```
+
+---
+
+# Why verification actually works here
+
+Because it’s grounded in **live feeds**, not model self-confidence.
+
+The verifier is not asking:
+
+> “Does this output feel plausible?”
+
+It is asking:
+
+> **“Does the number in this row match the source URL the agent attached?”**
+
+That difference is everything.
+
+## Example live sources used
+
+* Binance
+* Yahoo Finance
+* World Bank
+* IMF
+* live stock market data
+
+Once every figure has a live source behind it, verification stops being fuzzy and becomes mechanical.
+
+That’s the line between:
+
+* **“AI-generated report”**
+* and **“research pipeline”**
+
+---
+
+# Repo philosophy
+
+## Swarm = execution layer
+
+## Loop = trust layer
+
+Most people are building better swarms.
+
+The more important thing is building **a system that assumes the swarm will fail** and is designed to catch it.
+
+This repo is opinionated about one thing:
+
+> **Generation should never be the final step in a high-stakes workflow.**
+
+The final step should be **verification**.
+
+---
+
+# Core design principles
+
+## 1. The swarm is not the product
+
+The swarm is just the first draft engine.
+
+If you treat the first pass as the answer, you are shipping hallucinations with better formatting.
+
+---
+
+## 2. Verification must be rejectable
+
+“Looks good” is not verification.
+
+A good verify layer uses checks like:
+
+* source resolves / doesn’t resolve
+* field present / missing
+* number matches / doesn’t match
+* date fresh / stale
+* schema complete / incomplete
+
+If the rule can’t reject work cleanly, it’s not strong enough.
+
+---
+
+## 3. Failed work should rerun automatically
+
+Humans should not have to manually inspect every row and patch bad outputs one by one.
+
+If the system knows *why* a task failed, it should be able to requeue that task automatically.
+
+That is where the leverage comes from.
+
+---
+
+## 4. Quality should equal the checklist, not the model mood
+
+Raw LLM quality is unstable.
+
+A checklist is stable.
+
+The goal is to move the system from:
+
+* “I hope the model got it right”
+
+to:
+
+* **“The task cannot exit unless it passes objective checks.”**
+
+---
+
+# Raw swarm vs self-verifying loop
+
+## Raw swarm
+
+* ❌ Runs once and returns whatever came back
+* ❌ Hidden errors ship with the report
+* ❌ Quality equals the worst agent
+* ❌ Manual auditing becomes mandatory
+* ❌ Confidence gets mistaken for correctness
+* ❌ More agents = more ways to be wrong faster
+
+## Self-verifying loop
+
+* ✅ Runs until the verify stage is clean
+* ✅ Failed rows are rejected automatically
+* ✅ Rejected tasks rerun automatically
+* ✅ Quality is enforced by the checklist
+* ✅ Every figure traces back to a live source
+* ✅ Human review becomes optional instead of required
+
+---
+
+# Minimal mental model
+
+If you only remember one thing, remember this:
+
+```text id="3dbfc7"
+swarm = produce output fast
+verifier = check output against reality
+loop = keep going until reality wins
+```
+
+---
+
+# How to implement it
+
+You do **not** need a frontier lab to build this pattern.
+
+You need three parts.
+
+## 1) Planner / verifier model
+
+A model that can:
+
+* break a job into structured subtasks
+* evaluate completed tasks against a strict checklist
+* produce rejection reasons cleanly enough to rerun
+
+## 2) Parallel execution swarm
+
+A model / agent layer that can:
+
+* process many tasks concurrently
+* return consistent structured outputs
+* be rerun cheaply for failed tasks
+
+## 3) Source-aware verification contract
+
+You need a schema that forces every task to return:
+
+* structured fields
+* source URLs
+* timestamps if relevant
+* enough information for the verifier to compare claim vs source
+
+Without that, “verification” collapses into subjective review.
+
+---
+
+# Suggested workflow
+
+## Step 1 — Define the output contract
+
+For each task, require fields like:
+
+```json id="j6lb9v"
+{
+  "company": "Tesla",
+  "revenue": "97.7B",
+  "gross_margin": "17.9%",
+  "market_cap": "X",
+  "source_urls": [
+    "https://...",
+    "https://..."
+  ],
+  "notes": "..."
+}
+```
+
+## Step 2 — Define failure conditions
+
+Example:
+
+* missing source URL
+* URL 404s
+* numeric mismatch vs source
+* stale date
+* empty required field
+* malformed output schema
+
+## Step 3 — Run the swarm
+
+Generate outputs in parallel.
+
+## Step 4 — Verify every result
+
+Do not sample.
+Do not spot-check.
+Check **everything**.
+
+## Step 5 — Requeue only failures
+
+Do not rerun the entire job.
+Rerun the rejected tasks with the failure reason attached.
+
+## Step 6 — Repeat until clean
+
+Loop ends only when the rejection queue is empty.
+
+---
+
+# Where this matters most
+
+This pattern is most useful anywhere hallucinations are expensive.
+
+## Finance
+
+* company research
+* market maps
+* earnings comparisons
+* valuation / multiples tracking
+* source-linked investment memos
+
+## Consulting
+
+* competitive landscapes
+* market sizing
+* benchmarking reports
+* slide-ready research pipelines
+
+## Research / academia
+
+* literature reviews
+* comparison matrices
+* source-backed synthesis
+* citation-heavy analysis
+
+## Internal ops
+
+* vendor comparisons
+* procurement research
+* strategy briefs
+* automated due diligence
+
+---
+
+# Why Kimi K2.6 is such a strong fit
+
+Kimi K2.6 matters here because the swarm layer needs to do three things well:
+
+## 1. Handle large research jobs
+
+100 companies, large tables, long documents, many parallel tasks.
+
+## 2. Produce structured outputs consistently
+
+Verification only works if the swarm returns machine-checkable output.
+
+## 3. Stay useful under scale
+
+This pattern gets stronger when you can process lots of work at once and cheaply rerun failures.
+
+The loop is the safety layer.
+The swarm still needs to be good enough to make the loop worth running.
+
+---
+
+# The bigger point
+
+Everyone is racing to build bigger agent swarms.
+
+That’s not the interesting part anymore.
+
+The interesting part is what happens **after** generation.
+
+The next generation of AI systems won’t be judged by:
+
+* how many agents they launched
+* how cinematic the orchestration graph looks
+* how fast they can fill a dashboard with text
+
+They’ll be judged by one much simpler question:
+
+> **What stops bad output from shipping?**
+
+If the answer is “a human notices it eventually,” the system is not finished.
+
+---
+
+# TL;DR
+
+**The Self-Verifying Loop** is a pattern for turning agent swarms into something you can actually trust.
+
+## It works like this:
+
+* **Opus 4.8** plans and verifies
+* **Kimi K2.6** executes in parallel
+* every output is checked against live sources
+* failures are rejected automatically
+* rejected tasks rerun automatically
+* the workflow stops only when verification is clean
+
+## Result:
+
+* 300 parallel agents
+* ~4,000 workflow steps
+* 5 live data feeds
+* 100-company EV market report
+* 12 bad outputs caught on pass 1
+* 3 caught on pass 2
+* 0 failures by pass 3
+
+---
+
+# Final takeaway
+
+A raw swarm gives you **speed**.
+
+A self-verifying loop gives you **speed you can trust**.
+
+And that’s the difference between:
+
+* a cool AI demo
+* and a system you can actually use for serious research
